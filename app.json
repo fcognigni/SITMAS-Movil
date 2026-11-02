@@ -1,0 +1,68 @@
+{
+  "expo": {
+    "name": "my-app",
+    "slug": "sitmas-movil",
+    "owner": "sitmas",
+    "extra": {
+      "eas": {
+        "projectId": "50098396-91e8-4c67-bece-18cb6926187e"
+      }
+    },
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/sitmas/biocba-avatar-expo.png",
+    "scheme": "myapp",
+    "userInterfaceStyle": "automatic",
+    "android": {
+      "package": "com.sitmas.movil",
+      "versionCode": 5,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-notifications",
+      [
+        "expo-sensors",
+        {
+          "motionPermission": "SITMAS usa el movimiento del teléfono para ayudarte a nivelar la foto del odómetro."
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "SITMAS necesita acceder a la cámara para fotografiar el odómetro al comenzar la ruta.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": false
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "SITMAS necesita tu ubicación para mostrar tu posición y acompañar el viaje.",
+          "locationAlwaysAndWhenInUsePermission": "SITMAS mantiene la ubicación durante un viaje, incluso con la pantalla bloqueada.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true,
+          "isIosBackgroundLocationEnabled": true
+        }
+      ],
+      "./plugins/with-location-notification-icon.cjs",
+      [
+        "expo-splash-screen",
+        {
+          "backgroundColor": "#208AEF",
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 76
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    }
+  }
+}

@@ -1,0 +1,852 @@
+import { Text, TextInput } from '../components/AppText';
+import { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Animated,
+  FlatList,
+  Image,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  View,
+  useWindowDimensions,
+} from 'react-native';
+import PanelInicio from '../components/PanelInicio';
+import PanelChofer from '../components/PanelChofer';
+import { isDriverRole } from '../services/driver-routes';
+import {
+  CatalogABM,
+  TiposVehiculoABM,
+  VehiculosABM,
+} from '../components/LogisticaABM';
+import PlanificadorRutas from '../components/PlanificadorRutas';
+import { ApiError, InvalidSessionError, sitmasApi } from '../services/sitmas-api';
+import { MobileAccessDeniedError } from '../services/mobile-access';
+import { useIsMutating } from '@tanstack/react-query';
+import { useSesion } from '../state/sesion';
+import {
+  keys,
+  queries,
+  useSitmasMutation,
+  useSitmasQuery,
+} from '../query/sitmas';
+import QueryStatus from '../components/QueryStatus';
+import Collapsible from '../components/Collapsible';
+
+type Section = 'inicio' | 'logistica' | 'configuracion';
+type Tool =
+  'vehiculos' | 'hojas' | 'odometro' | 'marcas' | 'modelos' | 'tipos' | null;
+const assets = {
+  bio: require('@/assets/images/sitmas/biocba-solo-noBG.png'),
+  loginFooter: require('@/assets/images/sitmas/footer-logos.png'),
+  header: require('@/assets/images/sitmas/emec-logo-name-noBG.png'),
+  ambiente: require('@/assets/images/sitmas/ambiente_sinfondo.png'),
+  espacios: require('@/assets/images/sitmas/espacios_verdes_sinfondo.png'),
+  escudo: require('@/assets/images/sitmas/escudo2_sinfondo.png'),
+  footer: require('@/assets/images/sitmas/logos.png'),
+};
+function Logo({ name, style }: { name: keyof typeof assets; style: object }) {
+  return <Image source={assets[name]} resizeMode="contain" style={style} />;
+}
+function Card({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <View style={styles.card}>
+      <View style={styles.cardHeading}>
+        <View style={styles.accent} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.cardTitle}>{title}</Text>
+          {subtitle && <Text style={styles.muted}>{subtitle}</Text>}
+        </View>
+      </View>
+      {children}
+    </View>
+  );
+}
+function Login() {
+  // Zustand: seleccionamos la acción de sesión, sin copiar datos de la API.
+  const onLogin = useSesion((state) => state.signIn);
+  // TanStack controla carga/error del login; al confirmar se actualiza Zustand.
+  const login = useSitmasMutation(
+    ({ usuario, password }: { usuario: string; password: string }) =>
+      sitmasApi.login(usuario, password),
+    [],
+  );
+  const loading = login.isPending;
+  const [usuario, setUsuario] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const logoPosition = useRef(new Animated.Value(1)).current;
+  const formOpacity = useRef(new Animated.Value(0)).current;
+  const formLift = useRef(new Animated.Value(22)).current;
+  const background = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const entrance = Animated.sequence([
+      Animated.delay(350),
+      Animated.timing(logoPosition, {
+        toValue: 0,
+        duration: 1250,
+        useNativeDriver: false,
+      }),
+      Animated.parallel([
+        Animated.timing(formOpacity, {
+          toValue: 1,
+          duration: 700,
+          useNativeDriver: false,
+        }),
+        Animated.timing(formLift, {
+          toValue: 0,
+          duration: 700,
+          useNativeDriver: false,
+        }),
+      ]),
+    ]);
+    const colors = Animated.loop(
+      Animated.sequence([
+        Animated.timing(background, {
+          toValue: 1,
+          duration: 2400,
+          useNativeDriver: false,
+        }),
+        Animated.timing(background, {
+          toValue: 2,
+          duration: 2400,
+          useNativeDriver: false,
+        }),
+        Animated.timing(background, {
+          toValue: 3,
+          duration: 2400,
+          useNativeDriver: false,
+        }),
+        Animated.timing(background, {
+          toValue: 4,
+          duration: 2400,
+          useNativeDriver: false,
+        }),
+        Animated.timing(background, {
+          toValue: 0,
+          duration: 2400,
+          useNativeDriver: false,
+        }),
+      ]),
+    );
+    entrance.start();
+    colors.start();
+    return () => {
+      entrance.stop();
+      colors.stop();
+    };
+  }, [background, formLift, formOpacity, logoPosition]);
+  async function enter() {
+    if (!usuario.trim() || !password) {
+      setError('Ingresá usuario y contraseña.');
+      return;
+    }
+    if (loading) return;
+    setError('');
+    try {
+      const session = await login.run({ usuario: usuario.trim(), password });
+      login.reset();
+      setPassword('');
+      onLogin(session);
+    } catch (error) {
+      if (error instanceof InvalidSessionError || error instanceof MobileAccessDeniedError) {
+        setError(error.message);
+      } else if (error instanceof ApiError) {
+        setError(
+          error.status === 401
+            ? 'Usuario o contraseña incorrectos.'
+            : error.status === 403
+              ? 'Esta cuenta no tiene permiso para ingresar.'
+              : 'La API de SITMAS respondió con un error. Reintentá en unos momentos.',
+        );
+      } else {
+        setError(
+          'No se pudo conectar con la API de SITMAS. Verificá que esté iniciada y accesible desde este dispositivo.',
+        );
+      }
+    }
+  }
+  const logoY = logoPosition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [0, 235],
+  });
+  const logoScale = logoPosition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [1, 1.26],
+  });
+  return (
+    <View style={styles.loginSafe}>
+      <Animated.View
+        style={[
+          styles.loginBackground,
+          {
+            backgroundColor: background.interpolate({
+              inputRange: [0, 1, 2, 3, 4],
+              outputRange: [
+                '#662d91',
+                '#0054a6',
+                '#0099cc',
+                '#76bc21',
+                '#017c26',
+              ],
+            }),
+          },
+        ]}
+      >
+        <Animated.View
+          style={[
+            styles.loginBrand,
+            { transform: [{ translateY: logoY }, { scale: logoScale }] },
+          ]}
+        >
+          <Logo name="bio" style={styles.bioLogo} />
+        </Animated.View>
+        <Animated.View
+          style={[
+            styles.loginForm,
+            { opacity: formOpacity, transform: [{ translateY: formLift }] },
+          ]}
+        >
+          <TextInput
+            value={usuario}
+            onChangeText={setUsuario}
+            placeholder="Ingresá tu usuario"
+            placeholderTextColor="#6d8390"
+            style={styles.loginInput}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!loading}
+            keyboardType="email-address"
+          />
+          <TextInput
+            value={password}
+            onChangeText={setPassword}
+            placeholder="Ingresá tu contraseña"
+            placeholderTextColor="#6d8390"
+            style={styles.loginInput}
+            secureTextEntry
+            editable={!loading}
+          />
+          <Pressable
+            onPress={enter}
+            disabled={loading}
+            style={styles.enterButton}
+          >
+            {loading ? (
+              <ActivityIndicator color="#0093c4" />
+            ) : (
+              <Text style={styles.enterText}>INGRESAR</Text>
+            )}
+          </Pressable>
+          {!!error && <Text accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.loginError}>{error}</Text>}
+        </Animated.View>
+        <Logo name="loginFooter" style={styles.loginFooter} />
+      </Animated.View>
+    </View>
+  );
+}
+function Tile({
+  symbol,
+  label,
+  color,
+  onPress,
+}: {
+  symbol: string;
+  label: string;
+  color: 'blue' | 'green';
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={[
+        styles.tile,
+        color === 'blue' ? styles.tileBlue : styles.tileGreen,
+      ]}
+    >
+      <View style={styles.tileIcon}>
+        {symbol === 'truck' ? (
+          <View style={styles.truckIcon}>
+            <View style={styles.truckBox} />
+            <View style={styles.truckCab} />
+            <View style={[styles.truckWheel, { left: 5 }]} />
+            <View style={[styles.truckWheel, { right: 4 }]} />
+          </View>
+        ) : symbol === 'route' ? (
+          <View style={styles.routeIcon}>
+            <View style={styles.routeCircle} />
+            <View style={styles.routeStem} />
+            <View style={styles.routeDot} />
+          </View>
+        ) : (
+          <Text style={styles.tileSymbol}>{symbol}</Text>
+        )}
+      </View>
+      <Text style={styles.tileText}>{label}</Text>
+      <Text style={styles.tileHint}>ABRIR ›</Text>
+    </Pressable>
+  );
+}
+function Logistica({ footer }: { footer: React.ReactElement }) {
+  const [tool, setTool] = useState<Tool>(null);
+  const writing = useIsMutating() > 0;
+  const header = (
+    <>
+      <View style={styles.intro}>
+        <Logo name="espacios" style={styles.sectionLogo} />
+        <Text style={styles.title}>Gestión de logística</Text>
+        <Text style={styles.muted}>
+          Vehículos, hojas de ruta y operaciones.
+        </Text>
+      </View>
+      <View style={styles.tiles}>
+        <Tile
+          symbol="route"
+          label="Hojas de ruta"
+          color="blue"
+          onPress={() => !writing && setTool('hojas')}
+        />
+        <Tile
+          symbol="truck"
+          label="Vehículos"
+          color="green"
+          onPress={() => !writing && setTool('vehiculos')}
+        />
+        <Tile
+          symbol="◉"
+          label="Odómetro"
+          color="blue"
+          onPress={() => !writing && setTool('odometro')}
+        />
+        <Tile
+          symbol="◆"
+          label="Marcas"
+          color="green"
+          onPress={() => !writing && setTool('marcas')}
+        />
+        <Tile
+          symbol="▤"
+          label="Modelos"
+          color="blue"
+          onPress={() => !writing && setTool('modelos')}
+        />
+        <Tile
+          symbol="◫"
+          label="Tipos"
+          color="green"
+          onPress={() => !writing && setTool('tipos')}
+        />
+      </View>
+    </>
+  );
+  if (tool === 'hojas') return <PlanificadorRutas header={header} footer={footer} />;
+  if (tool === 'vehiculos')
+    return <VehiculosABM header={header} footer={footer} />;
+  if (tool === 'marcas' || tool === 'modelos')
+    return (
+      <CatalogABM
+        key={tool}
+        kind={tool === 'marcas' ? 'marca' : 'modelo'}
+        header={header}
+        footer={footer}
+      />
+    );
+  if (tool === 'tipos')
+    return <TiposVehiculoABM header={header} footer={footer} />;
+  if (tool === 'odometro')
+    return <OdometroPanel header={header} footer={footer} />;
+  return (
+    <ScrollView contentContainerStyle={styles.content}>
+      {header}
+      {footer}
+    </ScrollView>
+  );
+}
+
+function OdometroPanel({
+  header,
+  footer,
+}: {
+  header: React.ReactElement;
+  footer: React.ReactElement;
+}) {
+  const vehiclesQuery = useSitmasQuery(queries.vehiculos);
+  const [idVehiculo, setIdVehiculo] = useState(0);
+  const odometersQuery = useSitmasQuery(queries.odometrosVehiculo(idVehiculo), idVehiculo > 0);
+  const vehiculos = vehiclesQuery.data ?? [];
+  const odometros = odometersQuery.data ?? [];
+  // Guardar invalida odómetros para que la lista vuelva a leer la API.
+  const save = useSitmasMutation(sitmasApi.guardarOdometro, [keys.odometros]);
+  const [inicio, setInicio] = useState('');
+  const [final, setFinal] = useState('');
+  const [message, setMessage] = useState('');
+  async function saveOdometer() {
+    if (save.isPending) return;
+    const start = Number(inicio.replace(',', '.')),
+      end = Number(final.replace(',', '.'));
+    if (
+      !idVehiculo ||
+      !inicio.trim() ||
+      !final.trim() ||
+      !Number.isFinite(start) ||
+      !Number.isFinite(end) ||
+      start < 0 ||
+      end < start
+    ) {
+      setMessage(
+        'Seleccioná vehículo y lecturas válidas; la lectura final no puede ser menor a la inicial.',
+      );
+      return;
+    }
+    try {
+      await save.run({
+        IdVehiculo: idVehiculo,
+        InicioOdom: start,
+        FinalOdom: end,
+      });
+      setInicio('');
+      setFinal('');
+      setMessage('El odómetro se registró en SITMAS.');
+    } catch {
+      setMessage(
+        'No se pudo confirmar el registro. Revisá el listado antes de reintentar.',
+      );
+    }
+  }
+  return (
+    <FlatList
+      style={{ flex: 1 }}
+      contentContainerStyle={styles.content}
+      keyboardShouldPersistTaps="handled"
+      data={odometros}
+      keyExtractor={(item) => String(item.IdRegistroOdomet)}
+      ListHeaderComponent={
+        <>
+          {header}
+          <QueryStatus queries={idVehiculo > 0 ? [vehiclesQuery, odometersQuery] : [vehiclesQuery]} />
+          {idVehiculo > 0 && odometersQuery.isError && (
+            <Text accessibilityRole="alert" style={styles.muted}>
+              No se pudieron consultar las lecturas de este vehículo. Podés reintentar o seleccionar otro vehículo.
+            </Text>
+          )}
+          <Card
+            title="Registro de odómetro"
+            subtitle="Lecturas diarias de vehículos."
+          >
+            <Text style={styles.muted}>Elegí un vehículo</Text>
+            <View style={styles.brandChoices}>
+              {vehiculos.map((v) => (
+                <Pressable
+                  key={v.Id}
+                  disabled={save.isPending}
+                  onPress={() => setIdVehiculo(v.Id)}
+                  style={[
+                    styles.brandChoice,
+                    idVehiculo === v.Id && styles.brandSelected,
+                  ]}
+                >
+                  <Text style={styles.brandText}>{v.Patente}</Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput
+              editable={!save.isPending}
+              value={inicio}
+              onChangeText={setInicio}
+              keyboardType="decimal-pad"
+              placeholder="Odómetro inicial (km)"
+              style={styles.field}
+            />
+            <TextInput
+              editable={!save.isPending}
+              value={final}
+              onChangeText={setFinal}
+              keyboardType="decimal-pad"
+              placeholder="Odómetro final (km)"
+              style={styles.field}
+            />
+            <Pressable
+              disabled={save.isPending}
+              onPress={saveOdometer}
+              style={styles.actionButton}
+            >
+              <Text style={styles.actionText}>
+                {save.isPending ? 'GUARDANDO…' : 'GUARDAR REGISTRO'}
+              </Text>
+            </Pressable>
+          </Card>
+          {!!message && (
+            <Text accessibilityRole="alert" style={styles.muted}>
+              {message}
+            </Text>
+          )}
+        </>
+      }
+      ListEmptyComponent={
+        !idVehiculo ? (
+          <Text style={styles.muted}>Seleccioná un vehículo para consultar sus lecturas.</Text>
+        ) : odometersQuery.isSuccess ? (
+          <Text style={styles.muted}>No hay registros de odómetro para este vehículo.</Text>
+        ) : null
+      }
+      renderItem={({ item: o }) => (
+        <View style={styles.row}>
+          <Text style={styles.rowText}>
+            {o.Patente || 'Vehículo #' + o.IdVehiculo}
+          </Text>
+          <Text style={styles.status}>
+            +{o.KmRecorridosDia ?? o.FinalOdom - o.InicioOdom} km
+          </Text>
+        </View>
+      )}
+      ListFooterComponent={footer}
+    />
+  );
+}
+function Configuracion() {
+  return (
+    <View>
+      <View style={styles.intro}>
+        <Logo name="escudo" style={styles.sectionLogo} />
+        <Text style={styles.title}>Configuración</Text>
+        <Text style={styles.muted}>Parámetros generales de SITMAS.</Text>
+      </View>
+      <Card title="Configuración general">
+        <Text style={styles.muted}>
+          La administración general continúa en el sistema SITMAS.
+        </Text>
+      </Card>
+    </View>
+  );
+}
+function AppShell() {
+  const session = useSesion((state) => state.session);
+  const onLogout = useSesion((state) => state.signOut);
+  const writing = useIsMutating() > 0;
+  const [section, setSection] = useState<Section>('inicio');
+  const [openMenu, setOpenMenu] = useState(false);
+  const footer = (
+    <>
+      <View style={styles.footerWrap}>
+        <Logo name="footer" style={styles.footer} />
+      </View>
+    </>
+  );
+  if (!session) return null;
+  const driver = isDriverRole(session.rol);
+  return (
+    <View style={styles.app}>
+      <View style={styles.top}>
+        <Logo name="header" style={styles.headerLogo} />
+        <View style={styles.headerActions}>
+          <View style={styles.userInfo}>
+            <Text numberOfLines={1} style={styles.userName}>{session.nombre || 'Usuario'}</Text>
+            <Text numberOfLines={1} style={styles.userRole}>{session.rol || 'Sin rol'}</Text>
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Menú principal"
+            accessibilityState={{ expanded: openMenu }}
+            onPress={() => setOpenMenu(!openMenu)}
+            style={styles.menuButton}
+          >
+            <Text style={styles.menuText}>☰ MENÚ</Text>
+          </Pressable>
+        </View>
+      </View>
+      <View style={styles.dropdown} pointerEvents={openMenu ? 'auto' : 'none'}>
+        <Collapsible open={openMenu}>
+          <View style={styles.menuSurface}>
+            {((driver ? ['inicio'] : ['inicio', 'logistica', 'configuracion']) as Section[]).map(
+              (item) => (
+                <Pressable
+                  key={item}
+                  disabled={writing}
+                  onPress={() => {
+                    setSection(item);
+                    setOpenMenu(false);
+                  }}
+                  style={styles.menuItem}
+                >
+                  <Text style={styles.menuText}>
+                    {item === 'inicio'
+                      ? '⌂  INICIO'
+                      : item === 'logistica'
+                        ? '🚚  LOGÍSTICA'
+                        : '⚙  CONFIGURACIÓN'}
+                  </Text>
+                </Pressable>
+              ),
+            )}
+            <Pressable
+              onPress={onLogout}
+              disabled={writing}
+              style={styles.menuItem}
+            >
+              <Text style={styles.menuText}>CERRAR SESIÓN</Text>
+            </Pressable>
+          </View>
+        </Collapsible>
+      </View>
+      <View style={styles.bar}>
+        <Text style={styles.barText}>{section.toUpperCase()}</Text>
+      </View>
+      {!driver && section === 'logistica' ? (
+        <Logistica footer={footer} />
+      ) : (
+        <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.content}>
+          {driver ? <PanelChofer /> : section === 'inicio' ? <PanelInicio /> : <Configuracion />}
+          {footer}
+        </ScrollView>
+      )}
+    </View>
+  );
+}
+export default function HomeScreen() {
+  const { width } = useWindowDimensions();
+  // Este selector de Zustand cambia la pantalla al iniciar o cerrar sesión.
+  const signedIn = useSesion((state) => state.session !== null);
+  return <View style={{ flex: 1, width: width || '100%', maxWidth: '100%', minWidth: 0 }}>
+    {signedIn ? <AppShell /> : <Login />}
+  </View>;
+}
+const styles = StyleSheet.create({
+  loginSafe: { flex: 1, width: '100%', minWidth: 0, backgroundColor: '#0054a6' },
+  loginBackground: {
+    flex: 1,
+    justifyContent: 'center',
+    overflow: 'hidden',
+    paddingHorizontal: 28,
+  },
+  loginBrand: {
+    position: 'absolute',
+    top: 112,
+    left: 42,
+    right: 42,
+    alignItems: 'center',
+  },
+  bioLogo: { width: '100%', height: 125 },
+  loginForm: { marginTop: 210, gap: 16, width: '100%', minWidth: 0, alignSelf: 'center' },
+  loginInput: {
+    width: '100%',
+    minWidth: 0,
+    height: 54,
+    borderRadius: 28,
+    backgroundColor: '#fff',
+    paddingHorizontal: 21,
+    color: '#173542',
+    fontSize: 16,
+  },
+  loginError: { color: '#fff', fontSize: 12 },
+  enterButton: {
+    width: '100%',
+    minWidth: 0,
+    height: 54,
+    borderRadius: 28,
+    backgroundColor: '#fff',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  enterText: { color: '#0093c4', fontWeight: '800', fontSize: 15 },
+  loginFooter: {
+    position: 'absolute',
+    bottom: 18,
+    alignSelf: 'center',
+    width: 260,
+    height: 31,
+  },
+  app: { flex: 1, backgroundColor: '#eef7ec' },
+  top: {
+    height: 74,
+    backgroundColor: '#fff',
+    paddingHorizontal: 15,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerLogo: { width: 115, height: 50, flexShrink: 0 },
+  headerActions: { flex: 1, minWidth: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', gap: 8 },
+  userInfo: { flex: 1, minWidth: 0 },
+  userName: {
+    color: '#0054a6',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  userRole: { color: '#637f8d', fontSize: 10, textAlign: 'right' },
+  menuButton: { backgroundColor: '#0093c4', borderRadius: 7, padding: 10, flexShrink: 0 },
+  menuText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  dropdown: {
+    position: 'absolute',
+    top: 74,
+    left: 0,
+    right: 0,
+    zIndex: 10,
+  },
+  menuSurface: {
+    backgroundColor: '#0093c4',
+    padding: 8,
+    elevation: 8,
+  },
+  menuItem: { padding: 14, borderBottomWidth: 1, borderColor: '#5cc3e3' },
+  bar: {
+    backgroundColor: '#50c7fa',
+    paddingVertical: 11,
+    paddingHorizontal: 18,
+  },
+  barText: { color: '#0054a6', fontSize: 12, fontWeight: '800' },
+  content: { padding: 16, paddingBottom: 34, width: '100%', minWidth: 0 },
+  intro: { marginBottom: 16 },
+  sectionLogo: { alignSelf: 'flex-end', width: 105, height: 44 },
+  title: { color: '#007a33', fontSize: 25, fontWeight: '800' },
+  muted: { color: '#637f8d', fontSize: 11, marginTop: 3 },
+  card: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    padding: 15,
+    marginBottom: 13,
+    elevation: 2,
+  },
+  cardHeading: { flexDirection: 'row', gap: 9, marginBottom: 12 },
+  accent: { width: 5, borderRadius: 3, backgroundColor: '#76bc21' },
+  cardTitle: {
+    color: '#007a33',
+    fontSize: 14,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  row: {
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderColor: '#e3ece8',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  rowText: { color: '#1c424b', fontSize: 12, fontWeight: '600', flexShrink: 1 },
+  status: { color: '#007a33', fontSize: 11, fontWeight: '800' },
+  tiles: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 16 },
+  tile: {
+    width: '31%',
+    minHeight: 118,
+    borderRadius: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 7,
+    elevation: 2,
+  },
+  tileBlue: { backgroundColor: '#006fa6' },
+  tileGreen: { backgroundColor: '#087a42' },
+  tileIcon: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,.65)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  truckIcon: { width: 31, height: 24 },
+  truckBox: {
+    position: 'absolute',
+    left: 2,
+    top: 5,
+    width: 18,
+    height: 12,
+    backgroundColor: '#fff',
+    borderRadius: 2,
+  },
+  truckCab: {
+    position: 'absolute',
+    left: 21,
+    top: 9,
+    width: 9,
+    height: 8,
+    backgroundColor: '#fff',
+    borderTopRightRadius: 3,
+  },
+  truckWheel: {
+    position: 'absolute',
+    top: 18,
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: '#fff',
+  },
+  routeIcon: { width: 28, height: 29, alignItems: 'center' },
+  routeCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 3,
+    borderColor: '#fff',
+  },
+  routeStem: { width: 3, height: 7, backgroundColor: '#fff' },
+  routeDot: {
+    width: 5,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#fff',
+    position: 'absolute',
+    bottom: 0,
+  },
+  tileSymbol: {
+    color: '#fff',
+    fontSize: 27,
+    fontWeight: '700',
+    textAlign: 'center',
+    includeFontPadding: false,
+  },
+  tileText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
+    marginTop: 7,
+  },
+  tileHint: { color: '#e2f7f1', fontSize: 9, fontWeight: '700', marginTop: 3 },
+  field: {
+    height: 46,
+    borderWidth: 1,
+    borderColor: '#c9d9df',
+    borderRadius: 7,
+    paddingHorizontal: 12,
+    color: '#173542',
+    marginTop: 9,
+  },
+  actionButton: {
+    backgroundColor: '#76bc21',
+    alignSelf: 'flex-start',
+    borderRadius: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    marginTop: 10,
+  },
+  actionText: { color: '#fff', fontSize: 10, fontWeight: '800' },
+  brandChoices: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+    marginTop: 8,
+  },
+  brandChoice: {
+    borderRadius: 6,
+    backgroundColor: '#e2f1e9',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  brandSelected: { backgroundColor: '#76bc21' },
+  brandText: { color: '#005c36', fontSize: 10, fontWeight: '700' },
+  footerWrap: { alignItems: 'center', marginTop: 20, paddingBottom: 8 },
+  footer: { width: '100%', height: 28 },
+});

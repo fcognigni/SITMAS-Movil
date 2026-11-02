@@ -1,0 +1,308 @@
+import { recoveredThisWeek } from './recovered-materials';
+import { assertMobileAccess, MobileAccessDeniedError } from './mobile-access';
+/** Cliente de la API SITMAS. Nunca conecta la aplicación directamente a SQL Server. */
+const configuredBase =
+  process.env.EXPO_PUBLIC_SITMAS_API_URL ?? 'http://localhost:8098/api';
+const baseUrl = configuredBase.replace(/\/$/, '');
+let sessionToken: string | undefined;
+export function setSessionToken(token?: string) { sessionToken = token; }
+
+export type Session = {
+  idUsuario: number;
+  nombre: string;
+  rol: string;
+  permisos?: unknown[];
+  token?: string;
+};
+export type Vehiculo = {
+  Id: number;
+  Patente: string;
+  Id_Modelo: number;
+  Id_Tipo: number;
+};
+export type HojaRuta = {
+  Id: number;
+  FechaFormateada?: string;
+  Vehiculo?: string;
+  ChoferNombreCompleto?: string;
+  Id_Vehiculo?: number;
+  Id_Chofer?: number | null;
+  Id_Estado?: number | null;
+  Estado?: string;
+  Distancia_Total_Estimada_Km?: number;
+  HojaRutaFecha?: string;
+};
+export type PesoBruto = {
+  Categoria: string;
+  SubtipoMaterial: string;
+  TotalPesoBrutoKg: number;
+  CantidadPesadas: number;
+};
+export type Rendimiento = {
+  Categoria: string;
+  SubtipoMaterial: string;
+  TotalPesoBrutoKg: number;
+  TotalPesoUtilKg: number;
+  TotalDescarteKg: number;
+  PorcentajeRecuperacion: number;
+};
+export type StockNeto = {
+  Categoria: string;
+  SubtipoMaterial: string;
+  StockDisponibleKg: number;
+};
+export type Odometro = {
+  IdRegistroOdomet: number;
+  IdVehiculo: number;
+  Patente?: string;
+  FechaRegOdomFormateada?: string;
+  InicioOdom: number;
+  FinalOdom: number;
+  KmRecorridosDia?: number;
+};
+export type Marca = { Id: number; MarcaVehiculo: string };
+export type Modelo = { Id: number; ModeloVehiculo: string; Id_Marca: number };
+export type TipoVehiculo = {
+  Id?: number;
+  id_Tp_Vehiculo?: number;
+  Tp_Vehiculo?: string;
+  TipoVehiculo?: string;
+};
+export type Parada = {
+  Id_Detalle_HDR: number;
+  Id_HojaRuta: number | null;
+  Id_TipoMovimiento: number;
+  Id_RecursoMov: number;
+  Id_Origen: number;
+  Id_TipoMaterial: number;
+  Id_Estado: number;
+  HoraEstimada?: string;
+  HoraEstimadaFormateada?: string;
+  TipoMovimiento?: string;
+  RecursoMovilizado?: string;
+  Origen?: string;
+  TipoMaterial?: string;
+  EstadoRecorrido?: string;
+  Id_Ubicacion?: number | null;
+  Latitud?: number | null;
+  Longitud?: number | null;
+  DistanciaDesdeAnterior_Km?: number;
+};
+export type CatalogItem = Record<string, string | number | undefined>;
+
+export class ApiError extends Error {
+  constructor(
+    public readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+export class InvalidSessionError extends Error {
+  constructor() {
+    super('La API devolvió una sesión incompleta. Contactá al administrador.');
+    this.name = 'InvalidSessionError';
+  }
+}
+
+function validateSession(value: unknown): Session {
+  if (!value || typeof value !== 'object') throw new InvalidSessionError();
+  const data = value as Partial<Session>;
+  if (!Number.isInteger(data.idUsuario) || (data.idUsuario ?? 0) <= 0 ||
+      typeof data.nombre !== 'string' || !data.nombre.trim() ||
+      typeof data.rol !== 'string' || !data.rol.trim() ||
+      (data.token !== undefined && (typeof data.token !== 'string' || !data.token.trim())) ||
+      (data.permisos !== undefined && (!Array.isArray(data.permisos) ||
+        !data.permisos.every((permission) => typeof permission === 'string')))) {
+    throw new InvalidSessionError();
+  }
+  return data as Session;
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  if (/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):44325(?:\/|$)/i.test(baseUrl)) {
+    throw new Error('Configurá el acceso móvil protegido; no la URL directa de SITMAS.');
+  }
+  if (
+    /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\]):8097(?:\/|$)/i.test(baseUrl)
+  ) {
+    throw new Error(
+      'La demo fue retirada. Configurá la URL de la API real de SITMAS y reiniciá Expo.',
+    );
+  }
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (init?.signal?.aborted) controller.abort();
+  init?.signal?.addEventListener('abort', abort, { once: true });
+  const timeout = setTimeout(abort, 20_000);
+  try {
+    const response = await fetch(`${baseUrl}/${path.replace(/^\//, '')}`, {
+      ...init,
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        ...(sessionToken && path !== 'Usuario/Login' ? { Authorization: `Bearer ${sessionToken}` } : {}),
+        ...(init?.body ? { 'Content-Type': 'application/json' } : {}),
+        ...init?.headers,
+      },
+    });
+    const body = await response.text();
+    let data: unknown = body;
+    try {
+      data = body ? JSON.parse(body) : undefined;
+    } catch {
+      /* respuesta de texto */
+    }
+    if (response.status === 403 && path === 'Usuario/Login') throw new MobileAccessDeniedError();
+    if (!response.ok)
+      throw new ApiError(
+        response.status,
+        typeof data === 'object' && data
+          ? JSON.stringify(data)
+          : body || `Error ${response.status}`,
+      );
+    return data as T;
+  } finally {
+    clearTimeout(timeout);
+    init?.signal?.removeEventListener('abort', abort);
+  }
+}
+
+export const sitmasApi = {
+  tareasPendientes: (signal?: AbortSignal) =>
+    request<Parada[]>('detallehojaruta/pendientes', { signal }),
+  asignarTarea: (id: number, IdHojaRuta: number, DistanciaTramo: number, IdEstadoAsignado: number) =>
+    request<{ Mensaje: string }>(`detallehojaruta/${id}/asignar`, {
+      method: 'PATCH',
+      body: JSON.stringify({ IdHojaRuta, DistanciaTramo, IdEstadoAsignado }),
+    }),
+  actualizarDistanciaTotal: (id: number, DistanciaTotal: number) =>
+    request<{ Mensaje: string }>(`hojaruta/${id}/distanciatotal`, {
+      method: 'PATCH', body: JSON.stringify({ DistanciaTotal }),
+    }),
+  login: async (Usuario: string, Password: string) => {
+    const session = validateSession(await request<unknown>('Usuario/Login', {
+      method: 'POST',
+      body: JSON.stringify({ Usuario, Password }),
+    }));
+    assertMobileAccess(session);
+    return session;
+  },
+  vehiculos: (signal?: AbortSignal) =>
+    request<Vehiculo[]>('Vehiculo/ListarTodo', { signal }),
+  guardarVehiculo: (
+    data: Pick<Vehiculo, 'Patente' | 'Id_Modelo' | 'Id_Tipo'>,
+    id?: number,
+  ) =>
+    request<void>(id ? `Vehiculo/${id}` : 'Vehiculo', {
+      method: id ? 'PUT' : 'POST',
+      body: JSON.stringify(data),
+    }),
+  borrarVehiculo: (id: number) =>
+    request<void>(`Vehiculo/${id}`, { method: 'DELETE' }),
+  tiposVehiculo: (signal?: AbortSignal) =>
+    request<TipoVehiculo[]>('Tp_Vehiculo/ListarTodo', { signal }),
+  guardarTipoVehiculo: (nombre: string, id?: number) =>
+    request<void>(id ? `Tp_Vehiculo/Modificar/${id}` : 'Tp_Vehiculo/Insertar', {
+      method: 'POST',
+      body: JSON.stringify({ TipoVehiculo: nombre }),
+    }),
+  borrarTipoVehiculo: (id: number) =>
+    request<void>(`Tp_Vehiculo/Borrar/${id}`, { method: 'POST' }),
+  marcas: (signal?: AbortSignal) =>
+    request<Marca[]>('MarcaVeh/ListarTodo', { signal }),
+  modelos: (signal?: AbortSignal) =>
+    request<Modelo[]>('ModeloVeh/ListarTodo', { signal }),
+  guardarMarca: (nombre: string, id?: number) =>
+    request<void>(id ? `MarcaVeh/Modificar/${id}` : 'MarcaVeh/Insertar', {
+      method: id ? 'PUT' : 'POST',
+      body: JSON.stringify({ MarcaVehiculo: nombre }),
+    }),
+  borrarMarca: (id: number) =>
+    request<void>(`MarcaVeh/Borrar/${id}`, { method: 'DELETE' }),
+  guardarModelo: (nombre: string, idMarca: number, id?: number) =>
+    request<void>(id ? `ModeloVeh/Modificar/${id}` : 'ModeloVeh/Insertar', {
+      method: id ? 'PUT' : 'POST',
+      body: JSON.stringify({ ModeloVehiculo: nombre, Id_Marca: idMarca }),
+    }),
+  borrarModelo: (id: number) =>
+    request<void>(`ModeloVeh/Borrar/${id}`, { method: 'DELETE' }),
+  hojasRuta: (signal?: AbortSignal) =>
+    request<HojaRuta[]>('hojaruta', { signal }),
+  rutasHoy: (signal?: AbortSignal) =>
+    request<HojaRuta[]>('hojaruta/hoy', { signal }),
+  hojaRuta: (id: number, signal?: AbortSignal) =>
+    request<HojaRuta>(`hojaruta/${id}`, { signal }),
+  crearHojaRuta: (data: {
+    HojaRutaFecha: string;
+    Id_Vehiculo: number;
+    Id_Chofer: number | null;
+    Id_Estado?: number;
+  }) =>
+    request<{ IdGenerado: number }>('hojaruta', {
+      method: 'POST',
+      body: JSON.stringify({ Id: 0, ...data }),
+    }),
+  detalleHojaRuta: (id: number, signal?: AbortSignal) =>
+    request<Parada[]>(`detallehojaruta/hojaruta/${id}`, { signal }),
+  crearUbicacion: (Descripcion: string, Latitud: number, Longitud: number) =>
+    request<{ IdUbicacionGenerado: number }>('ubicaciongeografica', {
+      method: 'POST', body: JSON.stringify({ IdUbicacion: 0, Descripcion, Latitud, Longitud }),
+    }),
+  crearParada: (parada: Omit<Parada, 'Id_Detalle_HDR'>) =>
+    request<{ IdDetalleGenerado: number; Mensaje?: string }>('detallehojaruta', {
+      method: 'POST',
+      body: JSON.stringify({ Id_Detalle_HDR: 0, ...parada }),
+    }),
+  borrarParada: (id: number) =>
+    request<void>(`detallehojaruta/${id}`, { method: 'DELETE' }),
+  tiposMovimiento: (signal?: AbortSignal) =>
+    request<CatalogItem[]>('tipomovimientos', { signal }),
+  recursosMovilizados: (signal?: AbortSignal) =>
+    request<CatalogItem[]>('recursosmovilizados', { signal }),
+  origenes: (signal?: AbortSignal) =>
+    request<CatalogItem[]>('origen', { signal }),
+  materiales: (signal?: AbortSignal) =>
+    request<CatalogItem[]>('TP_Material', { signal }),
+  estadosHojaRuta: (signal?: AbortSignal) =>
+    request<CatalogItem[]>('EST_HDR/ListarTodo', { signal }),
+  materialesRecuperados: async (signal?: AbortSignal) => recoveredThisWeek(await request<Parameters<typeof recoveredThisWeek>[0]>('MaterialClasificado/ListarVista', { signal })),
+  pesoBruto: (signal?: AbortSignal) =>
+    request<PesoBruto[]>('Dashboard/PesoBrutoAcumulado', { signal }),
+  rendimiento: (signal?: AbortSignal) =>
+    request<Rendimiento[]>('Dashboard/RendimientoClasificacion', { signal }),
+  stockNeto: (signal?: AbortSignal) =>
+    request<StockNeto[]>('MovimientoSalida/StockNeto', { signal }),
+  odometrosVehiculo: (id: number, signal?: AbortSignal) =>
+    request<Odometro[]>(`registroodometro?idVehiculo=${id}`, { signal }),
+  iniciarOdometro: (IdVehiculo: number, Id_HojaRuta: number, InicioOdom: number) =>
+    request<{ IdRegistroOdomet: number }>('registroodometro/iniciar-ruta', {
+      method: 'POST', body: JSON.stringify({ IdVehiculo, Id_HojaRuta, InicioOdom }),
+    }),
+  aceptarRuta: (id: number, IdUsuario: number) =>
+    request<{ Mensaje: string }>(`hojaruta/${id}/iniciar`, {
+      method: 'PATCH', body: JSON.stringify({ IdUsuario }),
+    }),
+  finalizarOdometro: (id: number, FinalOdom: number) =>
+    request<{ Mensaje: string }>(`registroodometro/finalizar-ruta/${id}`, {
+      method: 'PUT', body: JSON.stringify({ FinalOdom }),
+    }),
+  finalizarRuta: (id: number, DistanciaTotal: number) =>
+    request<{ Mensaje: string }>(`hojaruta/${id}/finalizar`, {
+      method: 'PATCH', body: JSON.stringify({ DistanciaTotal }),
+    }),
+  tripAlerts: (signal?: AbortSignal) => request<{ id: string; routeId: number; createdAt: string }[]>('trip-alerts', { signal }),
+  forzarFinalizacion: (id: number) =>
+    request<{ Mensaje: string }>('hojaruta/' + id + '/forzar-finalizacion', { method: 'PATCH' }),
+  odometros: (signal?: AbortSignal) =>
+    request<Odometro[]>('registroodometro', { signal }),
+  guardarOdometro: (
+    registro: Pick<Odometro, 'IdVehiculo' | 'InicioOdom' | 'FinalOdom'>,
+  ) =>
+    request<Odometro>('registroodometro', {
+      method: 'POST',
+      body: JSON.stringify({ IdRegistroOdomet: 0, ...registro }),
+    }),
+};
